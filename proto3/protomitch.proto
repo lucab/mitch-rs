@@ -21,13 +21,10 @@ message FailedMsg {
 message JoinMsg {
   uint32 id = 1;
   string nickname = 2;
-  oneof address {
-    uint32 ipv4 = 3;
-    uint64 ipv6 = 4;
-  };
-  uint32 port = 5;
-  uint32 min_proto = 6;
-  uint32 max_proto = 7;
+  bytes  address = 3;
+  uint32 port = 4;
+  uint32 min_proto = 5;
+  uint32 max_proto = 6;
 }
 
 message PullMsg {

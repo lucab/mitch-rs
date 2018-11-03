@@ -31,23 +31,14 @@ pub struct JoinMsg {
     pub id: u32,
     #[prost(string, tag = "2")]
     pub nickname: String,
-    #[prost(uint32, tag = "5")]
+    #[prost(bytes, tag = "3")]
+    pub address: Vec<u8>,
+    #[prost(uint32, tag = "4")]
     pub port: u32,
-    #[prost(uint32, tag = "6")]
+    #[prost(uint32, tag = "5")]
     pub min_proto: u32,
-    #[prost(uint32, tag = "7")]
+    #[prost(uint32, tag = "6")]
     pub max_proto: u32,
-    #[prost(oneof = "join_msg::Address", tags = "3, 4")]
-    pub address: ::std::option::Option<join_msg::Address>,
-}
-pub mod join_msg {
-    #[derive(Clone, Oneof, PartialEq)]
-    pub enum Address {
-        #[prost(uint32, tag = "3")]
-        Ipv4(u32),
-        #[prost(uint64, tag = "4")]
-        Ipv6(u64),
-    }
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct PullMsg {

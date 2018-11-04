@@ -22,6 +22,7 @@ pub(crate) fn membership_task(swarm: &mut group::MitchSwarm) -> group::FutureSpa
     // Maximum number of parallel (buffered) in-flight events.
     let inflight_events = 100;
     let local_member = swarm.local.clone();
+    let tls_client = swarm.tls_connector.clone();
     let notifications_tx = swarm.notifications_tx.clone();
 
     // Members list.
@@ -43,7 +44,9 @@ pub(crate) fn membership_task(swarm: &mut group::MitchSwarm) -> group::FutureSpa
             trace!("membership event: {:?}", msg);
             let tx = notifications_tx.clone();
             let fut = match msg {
-                reactor::Event::Failed(id) => membership::failed(&mut members, id, tx),
+                reactor::Event::Failed(id) => {
+                    membership::failed(&mut members, tls_client.clone(), id, tx)
+                }
                 reactor::Event::Join(mi) => membership::join(&mut members, &local_member, mi, tx),
                 reactor::Event::Peers(ch) => membership::peers(&members, ch),
                 reactor::Event::Snapshot(ch) => membership::snapshot(&members, &local_member, ch),

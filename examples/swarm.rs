@@ -24,11 +24,19 @@ fn main() -> errors::Result<()> {
     let tcp = tokio::net::tcp::TcpListener::bind(&sock_addr)?;
     println!("-> Peer listening at '{:?}'", tcp.local_addr());
 
-    // Initialize TLS acceptor.
-    let der = include_bytes!("../fixtures/identity.p12");
-    let cert = native_tls::Identity::from_pkcs12(der, "mypass").unwrap();
-    let tls_acceptor =
-        tokio_tls::TlsAcceptor::from(native_tls::TlsAcceptor::builder(cert).build().unwrap());
+    // Initialize TLS, server side.
+    let peer_p12 = include_bytes!("../fixtures/certs/swarm-peer.p12");
+    let server_cert = native_tls::Identity::from_pkcs12(peer_p12, "")?;
+    let tls_server = native_tls::TlsAcceptor::builder(server_cert).build()?;
+
+    // Initialize TLS, client side.
+    let ca_bytes = include_bytes!("../fixtures/certs/ca.pem");
+    let ca_cert = native_tls::Certificate::from_pem(ca_bytes)?;
+    let client_cert = native_tls::Identity::from_pkcs12(peer_p12, "")?;
+    let tls_client = native_tls::TlsConnector::builder()
+        .identity(client_cert)
+        .add_root_certificate(ca_cert)
+        .build()?;
 
     // Watch for and print swarm membership events.
     let (tx, rx) = futures::sync::mpsc::channel(200);
@@ -38,7 +46,8 @@ fn main() -> errors::Result<()> {
     // Start running a swarm, waiting for other peers to reach us.
     let cfg = mitch::MitchConfig::default()
         .listener(Some(tcp))
-        .tls_acceptor(Some(tls_acceptor))
+        .tls_acceptor(Some(tls_server))
+        .tls_connector(Some(tls_client))
         .notifications_channel(Some(tx));
     let fut_swarm = cfg.build();
     let swarm = runner.block_on(fut_swarm)?;

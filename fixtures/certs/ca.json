@@ -1,0 +1,12 @@
+{
+  "CN": "mitch-fixtures-ca",
+  "key": {
+    "algo": "rsa",
+    "size": 4096
+  },
+  "names": [
+    {
+      "O": "github.com/lucab/mitch-rs"
+    }
+  ]
+}

@@ -38,6 +38,7 @@ pub(crate) fn join(
 
 pub(crate) fn failed(
     members: &mut Vec<MemberInfo>,
+    tls_client: native_tls::TlsConnector,
     id: u32,
     tx: Option<mpsc::Sender<observer::SwarmNotification>>,
 ) -> FutureTask {
@@ -74,10 +75,11 @@ pub(crate) fn failed(
         .flatten_stream()
         .and_then(move |member| {
             trace!("forwarding failed state to peer {}", member.id);
-            let fut = group::tls_connect(&member.target, 5).and_then(move |tls| {
-                protomitch::failed(id)
-                    .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
-            });
+            let fut =
+                group::tls_connect(tls_client.clone(), &member.target, 5).and_then(move |tls| {
+                    protomitch::failed(id)
+                        .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
+                });
             Ok(fut)
         }).buffer_unordered(inflight)
         .for_each(|_| Ok(()))

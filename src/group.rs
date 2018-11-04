@@ -26,7 +26,8 @@ pub struct MitchConfig {
     listener: Option<tokio::net::tcp::TcpListener>,
     local: MemberInfo,
     protocol_period: time::Duration,
-    tls_acceptor: Option<tokio_tls::TlsAcceptor>,
+    tls_acceptor: Option<native_tls::TlsAcceptor>,
+    tls_connector: Option<native_tls::TlsConnector>,
     notifications_tx: Option<mpsc::Sender<observer::SwarmNotification>>,
 }
 
@@ -38,6 +39,7 @@ impl Default for MitchConfig {
             local: MemberInfo::default(),
             protocol_period: time::Duration::from_secs(1),
             tls_acceptor: None,
+            tls_connector: None,
         }
     }
 }
@@ -58,9 +60,15 @@ impl MitchConfig {
         self
     }
 
-    /// Set a custom TLS acceptor.
-    pub fn tls_acceptor(mut self, tls_acceptor: Option<tokio_tls::TlsAcceptor>) -> Self {
+    /// Set a custom TLS acceptor (with server certificate).
+    pub fn tls_acceptor(mut self, tls_acceptor: Option<native_tls::TlsAcceptor>) -> Self {
         self.tls_acceptor = tls_acceptor;
+        self
+    }
+
+    /// Set a custom TLS connector (with client certificate).
+    pub fn tls_connector(mut self, tls_connector: Option<native_tls::TlsConnector>) -> Self {
+        self.tls_connector = tls_connector;
         self
     }
 
@@ -77,6 +85,22 @@ impl MitchConfig {
     pub fn build(self) -> super::FutureSwarm {
         // Cancellation helpers for internal tasks.
         let (trigger, valve) = stream_cancel::Valve::new();
+        // TLS, client-side.
+        let tls_connector = match self.tls_connector {
+            Some(tc) => tc,
+            None => {
+                let fut_err = future::err("Client TLS configuration missing".into());
+                return Box::new(fut_err);
+            }
+        };
+        // TLS, server-side
+        let tls_acceptor = match self.tls_acceptor {
+            Some(ta) => ta,
+            None => {
+                let fut_err = future::err("Server TLS configuration missing".into());
+                return Box::new(fut_err);
+            }
+        };
 
         let (tx, rx) = mpsc::channel(200);
         let cluster = SwarmMembers {
@@ -92,9 +116,10 @@ impl MitchConfig {
             period: self.protocol_period,
             trigger: Some(trigger),
             valve,
+            tls_connector,
         };
 
-        swarm.start(self.listener, self.tls_acceptor)
+        swarm.start(self.listener, tls_acceptor)
     }
 }
 
@@ -106,13 +131,15 @@ pub(crate) struct SwarmMembers {
 }
 
 /// Local swarm member.
-#[derive(Debug)]
 pub struct MitchSwarm {
     // Local node information.
     pub(crate) local: MemberInfo,
+    // Swarm peers and membership handling.
+    pub(crate) members: SwarmMembers,
+    // TLS, client-side.
+    pub(crate) tls_connector: native_tls::TlsConnector,
     // Notitications to external observers.
     pub(crate) notifications_tx: Option<mpsc::Sender<observer::SwarmNotification>>,
-    pub(crate) members: SwarmMembers,
     // Protocol period.
     pub(crate) period: time::Duration,
     pub(crate) trigger: Option<Trigger>,
@@ -124,7 +151,7 @@ impl MitchSwarm {
     fn serve_incoming(
         &mut self,
         listener: Option<tokio::net::TcpListener>,
-        tls_acceptor: Option<tokio_tls::TlsAcceptor>,
+        tls_acceptor: tokio_tls::TlsAcceptor,
     ) -> FutureSpawn {
         // Initialize TCP listener.
         let listener = match listener {
@@ -144,15 +171,6 @@ impl MitchSwarm {
             Ok(addr) => addr,
             Err(e) => {
                 error!("unable to get local socket address: {}", e);
-                return Box::new(future::err(()));
-            }
-        };
-
-        // Initialize TLS subsystem.
-        let tls_acceptor = match tls_acceptor {
-            Some(ta) => ta,
-            None => {
-                error!("TLS configuration missing");
                 return Box::new(future::err(()));
             }
         };
@@ -186,13 +204,14 @@ impl MitchSwarm {
     // Failure detector task.
     // TODO(lucab): unused and unfinished.
     fn failure_detector(&self) -> FutureSpawn {
+        let tls_connector = self.tls_connector.clone();
         let fut_detector = self
             .valve
             .wrap(tokio::timer::Interval::new_interval(self.period).from_err())
-            .and_then(|_| {
+            .and_then(move |_| {
                 // XXX
                 let dst = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 6666);
-                let fut = tls_connect(&dst, 7)
+                let fut = tls_connect(tls_connector.clone(), &dst, 8)
                     .and_then(move |tls| {
                         trace!("Pinging {}", dst);
                         protomitch::ping()
@@ -219,8 +238,9 @@ impl MitchSwarm {
     fn start(
         self,
         listener: Option<tokio::net::TcpListener>,
-        tls_acceptor: Option<tokio_tls::TlsAcceptor>,
+        tls_acceptor: native_tls::TlsAcceptor,
     ) -> super::FutureSwarm {
+        let tls = tokio_tls::TlsAcceptor::from(tls_acceptor);
         let fut_start = future::ok(self)
             .inspect(|sw| {
                 info!(
@@ -230,7 +250,7 @@ impl MitchSwarm {
             }).and_then(move |mut sw| {
                 // Internal tasks.
                 let _fut_detector = sw.failure_detector();
-                let fut_server = sw.serve_incoming(listener, tls_acceptor);
+                let fut_server = sw.serve_incoming(listener, tls);
                 let fut_mems = super::reactor::membership_task(&mut sw);
 
                 // Spawn all internal tasks.
@@ -282,23 +302,25 @@ impl MitchSwarm {
         dests: Vec<net::SocketAddr>,
         initial_pull_size: Option<u32>,
     ) -> super::FutureTask {
+        let tls_connector = self.tls_connector.clone();
         let tx = self.members.reactor_tx.clone();
         let local = self.local.clone();
         let par_reqs = dests.len().saturating_add(1);
         let fut_join = stream::iter_ok(dests)
             .and_then(move |dst| {
+                let tls = tls_connector.clone();
                 trace!("Joining {:?}", &dst);
                 let info = local.clone();
-                tls_connect(&dst, 8)
+                tls_connect(tls.clone(), &dst, 8)
                     .and_then(move |tls| {
                         protomitch::join(&info)
                             .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
                     }).timeout(time::Duration::from_secs(10))
                     .map_err(|e| errors::Error::from(format!("ping error: {}", e)))
-                    .and_then(move |_| Ok(dst))
-            }).and_then(move |dst| {
+                    .and_then(move |_| Ok((tls, dst)))
+            }).and_then(move |(tls_connector, dst)| {
                 trace!("Pulling from {:?}", &dst);
-                tls_connect(&dst, 8)
+                tls_connect(tls_connector.clone(), &dst, 8)
                     .and_then(move |tls| {
                         protomitch::pull(initial_pull_size)
                             .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
@@ -449,19 +471,14 @@ pub(crate) fn process_pull(
     Box::new(fut_tls)
 }
 
-pub(crate) fn tls_connect(dst: &net::SocketAddr, timeout: u64) -> FutureTLS {
+pub(crate) fn tls_connect(
+    tls_connector: native_tls::TlsConnector,
+    dst: &net::SocketAddr,
+    timeout: u64,
+) -> FutureTLS {
     let fut_tls_connect = tokio::net::TcpStream::connect(dst)
         .map_err(errors::Error::from)
-        .and_then(|tcp| {
-            let tls_connector = native_tls::TlsConnector::builder()
-                //XXX
-                .danger_accept_invalid_certs(true)
-                .danger_accept_invalid_hostnames(true)
-                .build();
-            future::result(tls_connector)
-                .from_err()
-                .map(|tls_connector| (tcp, tls_connector))
-        }).and_then(|(tcp, tls_connector)| {
+        .and_then(move |tcp| {
             let cx = tokio_tls::TlsConnector::from(tls_connector);
             cx.connect("mitch-rs", tcp).from_err()
         }).inspect(|_| trace!("TLS connected"))

@@ -1,0 +1,7 @@
+{
+  "CN": "mitch-rs",
+  "key": {
+    "algo": "rsa",
+    "size": 4096
+  }
+}

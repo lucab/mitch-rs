@@ -1,4 +1,4 @@
-use super::{errors, group};
+use super::{errors, MemberInfo};
 use byteorder::{NetworkEndian, WriteBytesExt};
 use futures::future;
 use futures::prelude::*;
@@ -22,7 +22,7 @@ pub(crate) fn ping() -> FuturePaylod {
     encode(&msg)
 }
 
-pub(crate) fn join(info: &group::MemberInfo) -> FuturePaylod {
+pub(crate) fn join(info: &MemberInfo) -> FuturePaylod {
     let address = match info.target.ip() {
         net::IpAddr::V4(ip4) => ip4.octets().to_vec(),
         net::IpAddr::V6(ip6) => ip6.octets().to_vec(),
@@ -34,13 +34,14 @@ pub(crate) fn join(info: &group::MemberInfo) -> FuturePaylod {
         nickname: info.nickname.clone(),
         min_proto: info.min_proto,
         max_proto: info.max_proto,
+        metadata: info.metadata.clone(),
     };
     let value = protomitch_pb::mitch_msg::Value::Join(join);
     let msg = protomitch_pb::MitchMsg { value: Some(value) };
     encode(&msg)
 }
 
-pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> group::MemberInfo {
+pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> MemberInfo {
     let addr = match msg.address.len() {
         4 => {
             let addr = &msg.address[..4];
@@ -57,21 +58,23 @@ pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> group::MemberInfo {
             let ipv6 = net::Ipv6Addr::from(bytes);
             net::IpAddr::V6(ipv6)
         }
-        // XXX
+        // TODO(lucab): return a proper error.
         _ => panic!("unexpected address length"),
     };
+    // TODO(lucab): check metadata maximum size.
     let target = net::SocketAddr::new(addr, msg.port as u16);
-    group::MemberInfo {
+    MemberInfo {
         id: msg.id,
         nickname: msg.nickname,
         min_proto: msg.min_proto,
         max_proto: msg.max_proto,
         target,
+        metadata: msg.metadata,
     }
 }
 
 /// Encode a "sync" response, containing an array of swarm members.
-pub(crate) fn sync(members: &[group::MemberInfo]) -> FuturePaylod {
+pub(crate) fn sync(members: &[MemberInfo]) -> FuturePaylod {
     let infos = members
         .iter()
         .map(|info| {
@@ -86,6 +89,7 @@ pub(crate) fn sync(members: &[group::MemberInfo]) -> FuturePaylod {
                 nickname: info.nickname.clone(),
                 min_proto: info.min_proto,
                 max_proto: info.max_proto,
+                metadata: info.metadata.clone(),
             }
         }).collect();
 
@@ -120,14 +124,14 @@ pub fn encode(msg: &protomitch_pb::MitchMsg) -> FuturePaylod {
     // Inner protobuf message length.
     let msglen = msg.encoded_len();
     if msglen >= (::std::u32::MAX as usize) {
-        let fut_err = future::err(format!("overlong protobuf message").into());
+        let fut_err = future::err("overlong protobuf message".into());
         return Box::new(fut_err);
     }
     // Overall payload length.
     let payload_len = match msglen.checked_add(4) {
         Some(val) => val,
         None => {
-            let fut_err = future::err(format!("overlong message").into());
+            let fut_err = future::err("overlong message".into());
             return Box::new(fut_err);
         }
     };

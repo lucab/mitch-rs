@@ -1,10 +1,8 @@
-use super::{errors, observer, protomitch, protomitch_pb, reactor};
+use super::{errors, observer, protomitch, protomitch_pb, reactor, MemberInfo};
 use byteorder::{NetworkEndian, ReadBytesExt};
 use futures::prelude::*;
 use futures::{future, stream, sync::mpsc, sync::oneshot};
-use names;
 use native_tls;
-use rand;
 use std::{io, mem, net, time};
 use stream_cancel;
 use tokio;
@@ -16,25 +14,12 @@ use tokio::prelude::*;
 
 pub(crate) type TlsTcpStream = tokio_tls::TlsStream<tokio::net::TcpStream>;
 
-pub(crate) type FutureSwarm =
-    Box<Future<Item = MitchSwarm, Error = errors::Error> + Send + 'static>;
-pub(crate) type FutureVoid = Box<Future<Item = (), Error = errors::Error> + Send + 'static>;
 pub(crate) type FutureSpawn = Box<Future<Item = (), Error = ()> + Send + 'static>;
 pub(crate) type FutureTLS =
     Box<Future<Item = TlsTcpStream, Error = errors::Error> + Send + 'static>;
 pub(crate) type FutureMitchMsg = Box<
     Future<Item = (TlsTcpStream, protomitch_pb::MitchMsg), Error = errors::Error> + Send + 'static,
 >;
-
-/// Identity of a swarm member.
-#[derive(Clone, Debug)]
-pub struct MemberInfo {
-    pub(crate) id: u32,
-    pub(crate) nickname: String,
-    pub(crate) min_proto: u32,
-    pub(crate) max_proto: u32,
-    pub(crate) target: net::SocketAddr,
-}
 
 /// Configuration builder for a swarm member.
 pub struct MitchConfig {
@@ -47,21 +32,10 @@ pub struct MitchConfig {
 
 impl Default for MitchConfig {
     fn default() -> Self {
-        let nickname = names::Generator::with_naming(names::Name::Plain)
-            .next()
-            .unwrap_or_else(|| String::from("not-available"));
-        let id = rand::random::<u32>();
-        let local = MemberInfo {
-            id,
-            nickname,
-            min_proto: super::MIN_PROTO,
-            max_proto: super::MAX_PROTO,
-            target: net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
-        };
         Self {
             listener: None,
             notifications_tx: None,
-            local,
+            local: MemberInfo::default(),
             protocol_period: time::Duration::from_secs(1),
             tls_acceptor: None,
         }
@@ -69,6 +43,15 @@ impl Default for MitchConfig {
 }
 
 impl MitchConfig {
+    /// Set metadata to be advertised by local member.
+    pub fn local_metadata(mut self, metadata: Vec<u8>) -> errors::Result<Self> {
+        if metadata.len() > MemberInfo::MAX_METADATA {
+            bail!("metadata larger than maximum size");
+        }
+        self.local.metadata = metadata;
+        Ok(self)
+    }
+
     /// Set a custom TCP listener.
     pub fn listener(mut self, listener: Option<tokio::net::tcp::TcpListener>) -> Self {
         self.listener = listener;
@@ -91,7 +74,7 @@ impl MitchConfig {
     }
 
     /// Finalize and create the node for the swarm.
-    pub fn build(self) -> FutureSwarm {
+    pub fn build(self) -> super::FutureSwarm {
         // Cancellation helpers for internal tasks.
         let (trigger, valve) = stream_cancel::Valve::new();
 
@@ -237,7 +220,7 @@ impl MitchSwarm {
         self,
         listener: Option<tokio::net::TcpListener>,
         tls_acceptor: Option<tokio_tls::TlsAcceptor>,
-    ) -> FutureSwarm {
+    ) -> super::FutureSwarm {
         let fut_start = future::ok(self)
             .inspect(|sw| {
                 info!(
@@ -273,7 +256,7 @@ impl MitchSwarm {
     }
 
     /// Stop this swarm member.
-    pub fn stop(self) -> FutureVoid {
+    pub fn stop(self) -> super::FutureTask {
         let fut_stop = future::ok(self)
             .and_then(|swarm| {
                 let id = swarm.local.id;
@@ -287,13 +270,18 @@ impl MitchSwarm {
                     trigger.cancel();
                 }
                 // Consume this swarm member.
-                Ok(drop(swarm))
+                drop(swarm);
+                Ok(())
             }).inspect(|_| debug!("MitchSwarm stopped"));
         Box::new(fut_stop)
     }
 
     /// Join an existing swarm, synchronizing the initial set of peers.
-    pub fn join(&self, dests: Vec<net::SocketAddr>, initial_pull_size: Option<u32>) -> FutureVoid {
+    pub fn join(
+        &self,
+        dests: Vec<net::SocketAddr>,
+        initial_pull_size: Option<u32>,
+    ) -> super::FutureTask {
         let tx = self.members.reactor_tx.clone();
         let local = self.local.clone();
         let par_reqs = dests.len().saturating_add(1);
@@ -401,6 +389,7 @@ pub(crate) fn process_sync(
                     min_proto: member.min_proto,
                     max_proto: member.max_proto,
                     target: ([127, 0, 0, 1], 0).into(),
+                    metadata: member.metadata,
                 };
                 let event = reactor::Event::Join(mi);
                 ch.send(event)
@@ -428,6 +417,7 @@ pub(crate) fn process_join(
                 min_proto: msg.min_proto,
                 max_proto: msg.max_proto,
                 target,
+                metadata: msg.metadata,
             };
             let event = reactor::Event::Join(mi);
             tx.send(event)

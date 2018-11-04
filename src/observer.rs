@@ -1,4 +1,4 @@
-use super::{errors, group, reactor};
+use super::{errors, reactor, MemberInfo};
 
 use futures::prelude::*;
 use futures::sync::{mpsc, oneshot};
@@ -40,7 +40,7 @@ impl Membership {
 #[derive(Debug)]
 pub enum SwarmNotification {
     /// A new member joined the swarm.
-    Joined(group::MemberInfo),
+    Joined(MemberInfo),
     /// A swarm member failed and left the swarm.
     Failed(u32),
 }

@@ -1,4 +1,4 @@
-use super::{errors, group, membership, reactor};
+use super::{errors, group, membership, reactor, MemberInfo};
 
 use futures::future;
 use futures::prelude::*;
@@ -8,13 +8,13 @@ use futures::sync::oneshot;
 #[derive(Debug)]
 pub(crate) enum Event {
     /// Notification, a new member is joining to swarm.
-    Join(group::MemberInfo),
+    Join(MemberInfo),
     /// Notification, a failed member is leaving the swarm.
     Failed(u32),
     /// Request, all swarm peers (*not* including this node).
-    Peers(oneshot::Sender<Vec<group::MemberInfo>>),
+    Peers(oneshot::Sender<Vec<MemberInfo>>),
     /// Request, all swarm members (including this node)
-    Snapshot(oneshot::Sender<Vec<group::MemberInfo>>),
+    Snapshot(oneshot::Sender<Vec<MemberInfo>>),
 }
 
 // Membership handling.

@@ -39,6 +39,8 @@ pub struct JoinMsg {
     pub min_proto: u32,
     #[prost(uint32, tag = "6")]
     pub max_proto: u32,
+    #[prost(bytes, tag = "7")]
+    pub metadata: Vec<u8>,
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct PullMsg {

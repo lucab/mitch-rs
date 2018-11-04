@@ -68,13 +68,15 @@ use futures::prelude::*;
 
 pub mod errors;
 mod group;
+mod member_info;
 mod membership;
 mod observer;
 mod protomitch;
 mod protomitch_pb;
 mod reactor;
 
-pub use group::{MemberInfo, MitchConfig, MitchSwarm};
+pub use group::{MitchConfig, MitchSwarm};
+pub use member_info::MemberInfo;
 pub use observer::{Membership, SwarmNotification};
 
 /// Minimum protocol version supported by this library.
@@ -82,9 +84,13 @@ pub static MIN_PROTO: u32 = 0;
 /// Maximum protocol version supported by this library.
 pub static MAX_PROTO: u32 = 0;
 
+/// Future mitch swarm.
+pub type FutureSwarm = Box<Future<Item = MitchSwarm, Error = errors::Error> + Send + 'static>;
+/// Future swarm task, generic empty result.
+pub type FutureTask = Box<Future<Item = (), Error = errors::Error> + Send + 'static>;
 /// Future set of swarm members.
 pub type FutureMembers =
-    Box<Future<Item = Vec<group::MemberInfo>, Error = errors::Error> + Send + 'static>;
+    Box<Future<Item = Vec<MemberInfo>, Error = errors::Error> + Send + 'static>;
 /// Stream of swarm notifications.
 pub type StreamNotifications =
-    Box<Stream<Item = observer::SwarmNotification, Error = errors::Error> + Send + 'static>;
+    Box<Stream<Item = SwarmNotification, Error = errors::Error> + Send + 'static>;

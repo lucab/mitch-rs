@@ -1,15 +1,15 @@
-use super::{errors, group, observer, protomitch};
+use super::{errors, group, observer, protomitch, FutureTask, MemberInfo};
 
 use futures::future;
 use futures::prelude::*;
 use futures::sync::{mpsc, oneshot};
 
 pub(crate) fn join(
-    members: &mut Vec<group::MemberInfo>,
-    local_member: &group::MemberInfo,
-    mi: group::MemberInfo,
+    members: &mut Vec<MemberInfo>,
+    local_member: &MemberInfo,
+    mi: MemberInfo,
     tx: Option<mpsc::Sender<observer::SwarmNotification>>,
-) -> group::FutureVoid {
+) -> FutureTask {
     // TODO(lucab): consider a map instead.
     let joined_index = members.iter().position(|ref m| m.id == mi.id);
     if joined_index.is_some() || (mi.id == local_member.id) {
@@ -37,10 +37,10 @@ pub(crate) fn join(
 }
 
 pub(crate) fn failed(
-    members: &mut Vec<group::MemberInfo>,
+    members: &mut Vec<MemberInfo>,
     id: u32,
     tx: Option<mpsc::Sender<observer::SwarmNotification>>,
-) -> group::FutureVoid {
+) -> FutureTask {
     // TODO(lucab): consider a map instead.
     match members.iter().position(|ref m| m.id == id) {
         Some(index) => {
@@ -56,7 +56,7 @@ pub(crate) fn failed(
     let peers = members.clone();
     let inflight = peers.len();
     // Notify external subscribers.
-    let fut_notify: group::FutureVoid = match tx {
+    let fut_notify: FutureTask = match tx {
         Some(ch) => {
             let fut_join = ch
                 .send(observer::SwarmNotification::Failed(id))
@@ -87,10 +87,7 @@ pub(crate) fn failed(
 }
 
 // Return a list of all peers currently known by this local node.
-pub(crate) fn peers(
-    peers: &[group::MemberInfo],
-    ch: oneshot::Sender<Vec<group::MemberInfo>>,
-) -> group::FutureVoid {
+pub(crate) fn peers(peers: &[MemberInfo], ch: oneshot::Sender<Vec<MemberInfo>>) -> FutureTask {
     let res = ch.send(peers.to_vec());
     let fut_sync = future::result(res)
         .map(|_| ())
@@ -100,10 +97,10 @@ pub(crate) fn peers(
 
 // Return a snapshot of all current swarm members.
 pub(crate) fn snapshot(
-    peers: &[group::MemberInfo],
-    local_member: &group::MemberInfo,
-    ch: oneshot::Sender<Vec<group::MemberInfo>>,
-) -> group::FutureVoid {
+    peers: &[MemberInfo],
+    local_member: &MemberInfo,
+    ch: oneshot::Sender<Vec<MemberInfo>>,
+) -> FutureTask {
     // Include this local node in the member list.
     let mut members = peers.to_vec();
     members.push(local_member.clone());

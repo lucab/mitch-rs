@@ -1,4 +1,4 @@
-use super::{errors, group, membership, reactor, MemberInfo};
+use super::{errors, group, membership, MemberInfo};
 
 use futures::future;
 use futures::prelude::*;
@@ -7,14 +7,16 @@ use futures::sync::oneshot;
 /// Internal reactor event.
 #[derive(Debug)]
 pub(crate) enum Event {
-    /// Notification, a new member is joining to swarm.
-    Join(MemberInfo),
     /// Notification, a failed member is leaving the swarm.
     Failed(u32),
+    /// Notification, a new member is joining to swarm.
+    Join(MemberInfo),
     /// Request, all swarm peers (*not* including this node).
     Peers(oneshot::Sender<Vec<MemberInfo>>),
     /// Request, all swarm members (including this node)
     Snapshot(oneshot::Sender<Vec<MemberInfo>>),
+    /// Notification, local swarm member is shutting down.
+    Shutdown(oneshot::Sender<()>),
 }
 
 // Membership handling.
@@ -44,13 +46,14 @@ pub(crate) fn membership_task(swarm: &mut group::MitchSwarm) -> group::FutureSpa
             trace!("membership event: {:?}", msg);
             let tx = notifications_tx.clone();
             let fut = match msg {
-                reactor::Event::Failed(id) => {
-                    membership::failed(&mut members, tls_client.clone(), id, tx)
+                Event::Failed(id) => membership::failed(&mut members, id, tx),
+                Event::Join(mi) => membership::join(&mut members, &local_member, mi, tx),
+                Event::Peers(ch) => membership::peers(&members, ch),
+                Event::Snapshot(ch) => membership::snapshot(&members, &local_member, ch),
+                Event::Shutdown(ch) => {
+                    membership::shutdown(members.clone(), local_member.clone(), tls_client.clone(), ch)
                 }
-                reactor::Event::Join(mi) => membership::join(&mut members, &local_member, mi, tx),
-                reactor::Event::Peers(ch) => membership::peers(&members, ch),
-                reactor::Event::Snapshot(ch) => membership::snapshot(&members, &local_member, ch),
-                //_ => Box::new(future::err(errors::Error::from("unknown"))),
+                // _ => Box::new(future::err(errors::Error::from("unknown"))),
             };
             Ok(fut)
         }).buffer_unordered(inflight_events)

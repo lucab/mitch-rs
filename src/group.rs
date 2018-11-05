@@ -279,11 +279,14 @@ impl MitchSwarm {
     pub fn stop(self) -> super::FutureTask {
         let fut_stop = future::ok(self)
             .and_then(|swarm| {
-                let id = swarm.local.id;
+                let (tx, rx) = oneshot::channel();
                 let ch = swarm.members.reactor_tx.clone();
-                ch.send(reactor::Event::Failed(id))
-                    .map(move |_| swarm)
+                ch.send(reactor::Event::Shutdown(tx))
+                    .and_then(|mut ch| ch.close())
                     .map_err(|_| errors::Error::from("stop: send error"))
+                    .and_then(|_| rx
+                    .from_err())
+                    .map(move |_| swarm)
             }).and_then(|mut swarm| {
                 // Cancel all internal tasks.
                 if let Some(trigger) = swarm.trigger.take() {

@@ -38,7 +38,6 @@ pub(crate) fn join(
 
 pub(crate) fn failed(
     members: &mut Vec<MemberInfo>,
-    tls_client: native_tls::TlsConnector,
     id: u32,
     tx: Option<mpsc::Sender<observer::SwarmNotification>>,
 ) -> FutureTask {
@@ -54,10 +53,8 @@ pub(crate) fn failed(
         }
     }
 
-    let peers = members.clone();
-    let inflight = peers.len();
     // Notify external subscribers.
-    let fut_notify: FutureTask = match tx {
+    let fut_task: FutureTask = match tx {
         Some(ch) => {
             let fut_join = ch
                 .send(observer::SwarmNotification::Failed(id))
@@ -70,22 +67,7 @@ pub(crate) fn failed(
             Box::new(fut_join)
         }
     };
-    let fut_void = fut_notify
-        .and_then(|_| Ok(futures::stream::iter_ok(peers)))
-        .flatten_stream()
-        .and_then(move |member| {
-            trace!("forwarding failed state to peer {}", member.id);
-            let fut =
-                group::tls_connect(tls_client.clone(), &member.target, 5).and_then(move |tls| {
-                    protomitch::failed(id)
-                        .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
-                });
-            Ok(fut)
-        }).buffer_unordered(inflight)
-        .for_each(|_| Ok(()))
-        .map_err(|e| errors::Error::from(format!("membership-failed error: {}", e)))
-        .map(|_| ());
-    Box::new(fut_void)
+    Box::new(fut_task)
 }
 
 // Return a list of all peers currently known by this local node.
@@ -112,4 +94,28 @@ pub(crate) fn snapshot(
         .map(|_| ())
         .map_err(|_mems| errors::Error::from("membership-snapshot error"));
     Box::new(fut_sync)
+}
+
+// Tell swarm peers that this member is shutting down.
+pub(crate) fn shutdown(
+    peers: Vec<MemberInfo>,
+    local_member: MemberInfo,
+    tls_client: native_tls::TlsConnector,
+    ch: oneshot::Sender<()>,
+) -> FutureTask {
+    let local_id = local_member.id;
+    let inflight = peers.len();
+    let fut_task = futures::stream::iter_ok(peers)
+        .and_then(move |peer| {
+            trace!("forwarding shutdown to peer {}", peer.id);
+            let fut =
+                group::tls_connect(tls_client.clone(), &peer.target, 5).and_then(move |tls| {
+                    protomitch::failed(local_id)
+                        .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
+                });
+            Ok(fut)
+        }).buffer_unordered(inflight)
+        .for_each(|_| Ok(()))
+        .and_then(move |_| ch.send(()).map_err(|_| "membership-shutdown error".into()));
+    Box::new(fut_task)
 }

@@ -284,8 +284,7 @@ impl MitchSwarm {
                 ch.send(reactor::Event::Shutdown(tx))
                     .and_then(|mut ch| ch.close())
                     .map_err(|_| errors::Error::from("stop: send error"))
-                    .and_then(|_| rx
-                    .from_err())
+                    .and_then(|_| rx.from_err())
                     .map(move |_| swarm)
             }).and_then(|mut swarm| {
                 // Cancel all internal tasks.
@@ -341,13 +340,15 @@ impl MitchSwarm {
             }).and_then(move |msg| {
                 let reactor_tx = tx.clone();
                 futures::stream::iter_ok(msg.members).for_each(move |member| {
-                    let member_info = protomitch::join_info(member);
-                    let join_event = reactor::Event::Join(member_info);
-                    reactor_tx
-                        .clone()
-                        .send(join_event)
-                        .map(|_| ())
-                        .map_err(|_| "sync error".into())
+                    let reactor_tx = reactor_tx.clone();
+                    future::result(protomitch::join_info(member)).and_then(move |member_info| {
+                        let join_event = reactor::Event::Join(member_info);
+                        reactor_tx
+                            .clone()
+                            .send(join_event)
+                            .map(|_| ())
+                            .map_err(|_| "sync error".into())
+                    })
                 })
             }).map(|_| Ok(()))
             .buffer_unordered(par_reqs)

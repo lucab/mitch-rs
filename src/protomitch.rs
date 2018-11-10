@@ -41,7 +41,12 @@ pub(crate) fn join(info: &MemberInfo) -> FuturePaylod {
     encode(&msg)
 }
 
-pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> MemberInfo {
+pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> errors::Result<MemberInfo> {
+    // Check metadata maximum size.
+    if msg.metadata.len() >= MemberInfo::MAX_METADATA {
+        bail!("overlong metadata");
+    }
+
     let addr = match msg.address.len() {
         4 => {
             let addr = &msg.address[..4];
@@ -58,19 +63,19 @@ pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> MemberInfo {
             let ipv6 = net::Ipv6Addr::from(bytes);
             net::IpAddr::V6(ipv6)
         }
-        // TODO(lucab): return a proper error.
-        _ => panic!("unexpected address length"),
+        _ => bail!("unexpected address length"),
     };
-    // TODO(lucab): check metadata maximum size.
+
     let target = net::SocketAddr::new(addr, msg.port as u16);
-    MemberInfo {
+    let mi = MemberInfo {
         id: msg.id,
         nickname: msg.nickname,
         min_proto: msg.min_proto,
         max_proto: msg.max_proto,
         target,
         metadata: msg.metadata,
-    }
+    };
+    Ok(mi)
 }
 
 /// Encode a "sync" response, containing an array of swarm members.

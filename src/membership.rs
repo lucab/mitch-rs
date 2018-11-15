@@ -3,6 +3,7 @@ use super::{errors, group, observer, protomitch, FutureTask, MemberInfo};
 use futures::future;
 use futures::prelude::*;
 use futures::sync::{mpsc, oneshot};
+use rand;
 
 pub(crate) fn join(
     members: &mut Vec<MemberInfo>,
@@ -79,6 +80,32 @@ pub(crate) fn peers(peers: &[MemberInfo], ch: oneshot::Sender<Vec<MemberInfo>>) 
     Box::new(fut_sync)
 }
 
+// Probe a random peer with timeout.
+pub(crate) fn probe(
+    peers: &[MemberInfo],
+    tls_client: native_tls::TlsConnector,
+    timeout: u64,
+) -> FutureTask {
+    use rand::seq::SliceRandom;
+
+    // Choose a random peer, if any available.
+    if peers.is_empty() {
+        return Box::new(future::ok(()));
+    }
+    let peer = match peers.choose(&mut rand::thread_rng()) {
+        Some(p) => p.clone(),
+        None => return Box::new(future::ok(())),
+    };
+
+    let fut_probe = future::ok(peer)
+        .inspect(|p| trace!("pinging peer {}", p.id))
+        .and_then(move |peer| group::tls_connect(tls_client.clone(), &peer.target, timeout))
+        .and_then(move |tls| {
+            protomitch::ping().and_then(|payload| tokio::io::write_all(tls, payload).from_err())
+        }).map(|_| ());
+    Box::new(fut_probe)
+}
+
 // Return a snapshot of all current swarm members.
 pub(crate) fn snapshot(
     peers: &[MemberInfo],
@@ -104,7 +131,7 @@ pub(crate) fn shutdown(
     ch: oneshot::Sender<()>,
 ) -> FutureTask {
     let local_id = local_member.id;
-    let inflight = peers.len();
+    let inflight = peers.len().saturating_add(1);
     let fut_task = futures::stream::iter_ok(peers)
         .and_then(move |peer| {
             trace!("forwarding shutdown to peer {}", peer.id);

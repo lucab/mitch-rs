@@ -1,4 +1,4 @@
-use super::{errors, observer, protomitch, protomitch_pb, reactor, MemberInfo};
+use super::{detector, errors, observer, protomitch, protomitch_pb, reactor, MemberInfo};
 use byteorder::{NetworkEndian, ReadBytesExt};
 use futures::prelude::*;
 use futures::{future, stream, sync::mpsc, sync::oneshot};
@@ -25,7 +25,6 @@ pub(crate) type FutureMitchMsg = Box<
 pub struct MitchConfig {
     listener: Option<tokio::net::tcp::TcpListener>,
     local: MemberInfo,
-    protocol_period: time::Duration,
     tls_acceptor: Option<native_tls::TlsAcceptor>,
     tls_connector: Option<native_tls::TlsConnector>,
     notifications_tx: Option<mpsc::Sender<observer::SwarmNotification>>,
@@ -37,7 +36,6 @@ impl Default for MitchConfig {
             listener: None,
             notifications_tx: None,
             local: MemberInfo::default(),
-            protocol_period: time::Duration::from_secs(1),
             tls_acceptor: None,
             tls_connector: None,
         }
@@ -102,18 +100,26 @@ impl MitchConfig {
             }
         };
 
-        let (tx, rx) = mpsc::channel(200);
+        // Membership channels.
+        let (mems_tx, mems_rx) = mpsc::channel(200);
         let cluster = SwarmMembers {
             members: Some(vec![]),
-            reactor_tx: tx,
-            events_rx: Some(rx),
+            reactor_tx: mems_tx,
+            events_rx: Some(mems_rx),
+        };
+
+        // Failure detector channels.
+        let (det_tx, det_rx) = mpsc::channel(200);
+        let detector = SwarmDetector {
+            det_tx,
+            det_rx: Some(det_rx),
         };
 
         let swarm = MitchSwarm {
             notifications_tx: self.notifications_tx,
             local: self.local,
             members: cluster,
-            period: self.protocol_period,
+            detector,
             trigger: Some(trigger),
             valve,
             tls_connector,
@@ -123,6 +129,13 @@ impl MitchConfig {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SwarmDetector {
+    pub(crate) det_tx: mpsc::Sender<detector::Event>,
+    pub(crate) det_rx: Option<mpsc::Receiver<detector::Event>>,
+}
+
+/// Local swarm member.
 #[derive(Debug)]
 pub(crate) struct SwarmMembers {
     pub(crate) members: Option<Vec<MemberInfo>>,
@@ -136,12 +149,12 @@ pub struct MitchSwarm {
     pub(crate) local: MemberInfo,
     // Swarm peers and membership handling.
     pub(crate) members: SwarmMembers,
+    // Failure detector.
+    pub(crate) detector: SwarmDetector,
     // TLS, client-side.
     pub(crate) tls_connector: native_tls::TlsConnector,
     // Notitications to external observers.
     pub(crate) notifications_tx: Option<mpsc::Sender<observer::SwarmNotification>>,
-    // Protocol period.
-    pub(crate) period: time::Duration,
     pub(crate) trigger: Option<Trigger>,
     pub(crate) valve: Valve,
 }
@@ -201,68 +214,36 @@ impl MitchSwarm {
         Box::new(fut_server)
     }
 
-    // Failure detector task.
-    // TODO(lucab): unused and unfinished.
-    fn failure_detector(&self) -> FutureSpawn {
-        let tls_connector = self.tls_connector.clone();
-        let fut_detector = self
-            .valve
-            .wrap(tokio::timer::Interval::new_interval(self.period).from_err())
-            .and_then(move |_| {
-                // XXX
-                let dst = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 6666);
-                let fut = tls_connect(tls_connector.clone(), &dst, 8)
-                    .and_then(move |tls| {
-                        trace!("Pinging {}", dst);
-                        protomitch::ping()
-                            .and_then(|payload| tokio::io::write_all(tls, payload).from_err())
-                    }).and_then(|(tls, _)| {
-                        let buf = Vec::<u8>::new();
-                        tokio::io::read_to_end(tls, buf).from_err()
-                    }).timeout(time::Duration::from_secs(7))
-                    .map_err(|e| errors::Error::from(format!("detector connection error: {}", e)));
-                Ok(fut)
-            }).buffer_unordered(10)
-            .then(|res| match res {
-                Ok(r) => Ok(Some(r)),
-                Err(err) => {
-                    error!("detector error: {}", err);
-                    Ok(None)
-                }
-            }).filter_map(|x| x)
-            .for_each(|_| Ok(()));
-        Box::new(fut_detector)
-    }
-
     // Start swarming.
     fn start(
         self,
         listener: Option<tokio::net::TcpListener>,
         tls_acceptor: native_tls::TlsAcceptor,
     ) -> super::FutureSwarm {
+        let banner = format!(
+            "Starting local node {}, nickname \"{}\"",
+            self.local.id, self.local.nickname
+        );
         let tls = tokio_tls::TlsAcceptor::from(tls_acceptor);
+
         let fut_start = future::ok(self)
-            .inspect(|sw| {
-                info!(
-                    "Starting local node {}, nickname \"{}\"",
-                    sw.local.id, sw.local.nickname
-                )
-            }).and_then(move |mut sw| {
+            .inspect(move |_| info!("{}", banner))
+            .and_then(move |mut sw| {
                 // Internal tasks.
-                let _fut_detector = sw.failure_detector();
+                let fut_detector = super::detector::detector_task(&mut sw);
                 let fut_server = sw.serve_incoming(listener, tls);
                 let fut_mems = super::reactor::membership_task(&mut sw);
 
                 // Spawn all internal tasks.
-                //let detector_task = tokio::executor::DefaultExecutor::current().spawn(fut_detector);
-                let server_task = tokio::executor::DefaultExecutor::current().spawn(fut_server);
                 let membership_task = tokio::executor::DefaultExecutor::current().spawn(fut_mems);
+                let server_task = tokio::executor::DefaultExecutor::current().spawn(fut_server);
+                let detector_task = tokio::executor::DefaultExecutor::current().spawn(fut_detector);
 
                 // Chain all results and pass the MitchSwarm through.
                 future::ok(sw)
-                    //.then(|g| detector_task.and(sw))
-                    .then(|sw| server_task.and(sw))
                     .then(|sw| membership_task.and(sw))
+                    .then(|sw| server_task.and(sw))
+                    .then(|sw| detector_task.and(sw))
                     .from_err()
             }).inspect(|_| debug!("MitchSwarm started"));
         Box::new(fut_start)
@@ -375,14 +356,14 @@ pub(crate) fn dispatch(
             Value::Join(msg) => process_join(tls, msg, tx),
             Value::Ping(_) => process_ping(tls),
             Value::Pull(msg) => process_pull(tls, msg, tx),
-            Value::Sync(msg) => process_sync(tls, msg, tx),
-            // _ => Box::new(future::err("dispatch: unknown value".into())),
+            Value::Sync(_) => Box::new(future::err("unexpected sync message".into())),
+            //_ => Box::new(future::err("dispatch: unknown value".into())),
         });
     Box::new(fut_void)
 }
 
 pub(crate) fn process_ping(tls: tokio_tls::TlsStream<tokio::net::TcpStream>) -> FutureTLS {
-    let fut_tls = future::ok(tls);
+    let fut_tls = future::ok(tls).inspect(|_| trace!("process_ping"));
     Box::new(fut_tls)
 }
 
@@ -400,7 +381,7 @@ pub(crate) fn process_failed(
     Box::new(fut_tls)
 }
 
-pub(crate) fn process_sync(
+pub(crate) fn _process_sync(
     tls: tokio_tls::TlsStream<tokio::net::TcpStream>,
     msg: protomitch_pb::SyncMsg,
     tx: mpsc::Sender<reactor::Event>,
@@ -432,24 +413,12 @@ pub(crate) fn process_join(
     msg: protomitch_pb::JoinMsg,
     tx: mpsc::Sender<reactor::Event>,
 ) -> FutureTLS {
-    let target = tls.get_ref().get_ref().peer_addr();
-    let fut_tls = future::result(target)
-        .from_err()
-        .map(|target| (tls, msg, tx, target))
-        .and_then(|(tls, msg, tx, target)| {
-            let mi = MemberInfo {
-                id: msg.id,
-                nickname: msg.nickname,
-                min_proto: msg.min_proto,
-                max_proto: msg.max_proto,
-                target,
-                metadata: msg.metadata,
-            };
-            let event = reactor::Event::Join(mi);
-            tx.send(event)
-                .map_err(|e| errors::Error::from(format!("join error: {}", e)))
-                .and_then(move |_| Ok(tls))
-        });
+    let fut_tls = future::result(protomitch::join_info(msg)).and_then(move |mi| {
+        let event = reactor::Event::Join(mi);
+        tx.send(event)
+            .map_err(|e| errors::Error::from(format!("join error: {}", e)))
+            .and_then(move |_| Ok(tls))
+    });
     Box::new(fut_tls)
 }
 
@@ -488,7 +457,6 @@ pub(crate) fn tls_connect(
         }).inspect(|_| trace!("TLS connected"))
         .timeout(time::Duration::from_secs(timeout))
         .map_err(|e| errors::Error::from(format!("tls_connect error: {}", e)));
-        ;
 
     Box::new(fut_tls_connect)
 }

@@ -66,6 +66,7 @@ extern crate tokio_tls;
 
 use futures::prelude::*;
 
+mod detector;
 pub mod errors;
 mod group;
 mod member_info;

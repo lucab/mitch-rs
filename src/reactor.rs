@@ -17,6 +17,8 @@ pub(crate) enum Event {
     Snapshot(oneshot::Sender<Vec<MemberInfo>>),
     /// Notification, local swarm member is shutting down.
     Shutdown(oneshot::Sender<()>),
+    /// Request, probe a random peer from the swarm (with timeout).
+    Probe(u64),
 }
 
 // Membership handling.
@@ -48,6 +50,7 @@ pub(crate) fn membership_task(swarm: &mut group::MitchSwarm) -> group::FutureSpa
             let fut = match msg {
                 Event::Failed(id) => membership::failed(&mut members, id, tx),
                 Event::Join(mi) => membership::join(&mut members, &local_member, mi, tx),
+                Event::Probe(timeout) => membership::probe(&members, tls_client.clone(), timeout),
                 Event::Peers(ch) => membership::peers(&members, ch),
                 Event::Snapshot(ch) => membership::snapshot(&members, &local_member, ch),
                 Event::Shutdown(ch) => {

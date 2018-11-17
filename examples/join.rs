@@ -14,7 +14,7 @@ use tokio::{runtime, timer};
 fn main() -> errors::Result<()> {
     // Initialize logging and tokio runtime.
     env_logger::Builder::new()
-        .filter(Some("mitch"), log::LevelFilter::Info)
+        .filter(Some("mitch"), log::LevelFilter::Trace)
         .init();
     let mut runner = runtime::Runtime::new()?;
 
@@ -50,12 +50,12 @@ fn main() -> errors::Result<()> {
         .tls_connector(Some(tls_client))
         .notifications_channel(Some(tx));
     let fut_group = cfg.build();
-    let swimgroup = runner.block_on(fut_group)?;
+    let swarm = runner.block_on(fut_group)?;
 
-    // Join a remote group.
+    // Join a remote swarm.
     let dest_port = 8888;
     let dest_addr = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), dest_port);
-    let fut_join = swimgroup
+    let fut_join = swarm
         .join(vec![dest_addr], None)
         .map_err(|e| eprintln!("-> Swarm join error: {}", e));
     runner.spawn(fut_join);
@@ -63,7 +63,7 @@ fn main() -> errors::Result<()> {
     // Keep running for 15 secs.
     let delay_secs = 15;
     let delay = time::Instant::now() + time::Duration::from_secs(delay_secs);
-    let fut_stop = swimgroup.stop();
+    let fut_stop = swarm.stop();
     let fut_delayed_stop = timer::Delay::new(delay)
         .inspect(|_| println!("-> Stopping peer after a fixed time"))
         .map_err(|e| format!("{}", e).into())

@@ -381,33 +381,6 @@ pub(crate) fn process_failed(
     Box::new(fut_tls)
 }
 
-pub(crate) fn _process_sync(
-    tls: tokio_tls::TlsStream<tokio::net::TcpStream>,
-    msg: protomitch_pb::SyncMsg,
-    tx: mpsc::Sender<reactor::Event>,
-) -> FutureTLS {
-    let fut_tls = future::ok((tls, msg, tx)).and_then(|(tls, msg, tx)| {
-        futures::stream::iter_ok(msg.members)
-            .and_then(move |member| {
-                let ch = tx.clone();
-                let mi = MemberInfo {
-                    id: member.id,
-                    nickname: member.nickname,
-                    min_proto: member.min_proto,
-                    max_proto: member.max_proto,
-                    target: ([127, 0, 0, 1], 0).into(),
-                    metadata: member.metadata,
-                };
-                let event = reactor::Event::Join(mi);
-                ch.send(event)
-                    .map_err(|e| errors::Error::from(format!("join error: {}", e)))
-            }).for_each(|_| Ok(()))
-            .map_err(|e| errors::Error::from(format!("join error: {}", e)))
-            .and_then(move |_| Ok(tls))
-    });
-    Box::new(fut_tls)
-}
-
 pub(crate) fn process_join(
     tls: tokio_tls::TlsStream<tokio::net::TcpStream>,
     msg: protomitch_pb::JoinMsg,
@@ -477,7 +450,7 @@ pub(crate) fn read_protomsg(
             })
         }).timeout(time::Duration::from_secs(timeout))
         .map_err(|e| errors::Error::from(format!("read_protomsg error: {}", e)))
-        .and_then(|(tls, msg)| protomitch::try_parse(&msg).map(|protomsg| (tls, protomsg)))
+        .and_then(|(tls, msg)| protomitch::try_parse_mitchmsg(&msg).map(|mmsg| (tls, mmsg)))
         .inspect(|(_tls, protomsg)| trace!("got protomitch {:?}", protomsg));
 
     Box::new(fut_protomsg)

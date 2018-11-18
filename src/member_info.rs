@@ -29,7 +29,7 @@ impl MemberInfo {
             nickname,
             min_proto: super::MIN_PROTO,
             max_proto: super::MAX_PROTO,
-            target: net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 0),
+            target: net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), 12421),
             metadata: vec![],
         }
     }

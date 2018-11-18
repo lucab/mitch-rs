@@ -19,7 +19,7 @@ fn main() -> errors::Result<()> {
     let mut runner = runtime::Runtime::new()?;
 
     // Initialize TCP listener.
-    let port = 8888;
+    let port = 12421;
     let sock_addr = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), port);
     let tcp = tokio::net::tcp::TcpListener::bind(&sock_addr)?;
     println!("-> Peer listening at '{:?}'", tcp.local_addr());

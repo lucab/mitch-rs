@@ -53,7 +53,7 @@ fn main() -> errors::Result<()> {
     let swarm = runner.block_on(fut_group)?;
 
     // Join a remote swarm.
-    let dest_port = 8888;
+    let dest_port = 12421;
     let dest_addr = net::SocketAddr::new(net::Ipv4Addr::LOCALHOST.into(), dest_port);
     let fut_join = swarm
         .join(vec![dest_addr], None)

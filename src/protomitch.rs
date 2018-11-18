@@ -6,39 +6,14 @@ use prost::Message;
 use protomitch_pb;
 use std::net;
 
+/// Future vector of bytes, wire format.
 pub(crate) type FuturePaylod = Box<Future<Item = Vec<u8>, Error = errors::Error> + Send>;
 
-// Try to parse a bytes slice into a mitch protobuf message.
+/// Try to parse a bytes slice into a mitch protobuf message.
 #[inline(always)]
-pub(crate) fn try_parse(payload: &[u8]) -> errors::Result<protomitch_pb::MitchMsg> {
+pub(crate) fn try_parse_mitchmsg(payload: &[u8]) -> errors::Result<protomitch_pb::MitchMsg> {
     use errors::ResultExt;
     protomitch_pb::MitchMsg::decode(payload).chain_err(|| "failed to parse mitch protobuf message")
-}
-
-pub(crate) fn ping() -> FuturePaylod {
-    let ping = protomitch_pb::PingMsg {};
-    let value = protomitch_pb::mitch_msg::Value::Ping(ping);
-    let msg = protomitch_pb::MitchMsg { value: Some(value) };
-    encode(&msg)
-}
-
-pub(crate) fn join(info: &MemberInfo) -> FuturePaylod {
-    let address = match info.target.ip() {
-        net::IpAddr::V4(ip4) => ip4.octets().to_vec(),
-        net::IpAddr::V6(ip6) => ip6.octets().to_vec(),
-    };
-    let join = protomitch_pb::JoinMsg {
-        id: info.id,
-        address,
-        port: info.target.port().into(),
-        nickname: info.nickname.clone(),
-        min_proto: info.min_proto,
-        max_proto: info.max_proto,
-        metadata: info.metadata.clone(),
-    };
-    let value = protomitch_pb::mitch_msg::Value::Join(join);
-    let msg = protomitch_pb::MitchMsg { value: Some(value) };
-    encode(&msg)
 }
 
 pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> errors::Result<MemberInfo> {
@@ -47,6 +22,13 @@ pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> errors::Result<MemberInf
         bail!("overlong metadata");
     }
 
+    // Parse peer port.
+    if msg.port > u32::from(::std::u16::MAX) {
+        bail!("invalid peer port ({})", msg.port);
+    }
+    let port = msg.port as u16;
+
+    // Parse peer address.
     let addr = match msg.address.len() {
         4 => {
             let addr = &msg.address[..4];
@@ -66,7 +48,7 @@ pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> errors::Result<MemberInf
         _ => bail!("unexpected address length"),
     };
 
-    let target = net::SocketAddr::new(addr, msg.port as u16);
+    let target = net::SocketAddr::new(addr, port);
     let mi = MemberInfo {
         id: msg.id,
         nickname: msg.nickname,
@@ -76,6 +58,34 @@ pub(crate) fn join_info(msg: protomitch_pb::JoinMsg) -> errors::Result<MemberInf
         metadata: msg.metadata,
     };
     Ok(mi)
+}
+
+/// Encode a "ping" message.
+pub(crate) fn ping() -> FuturePaylod {
+    let ping = protomitch_pb::PingMsg {};
+    let value = protomitch_pb::mitch_msg::Value::Ping(ping);
+    let msg = protomitch_pb::MitchMsg { value: Some(value) };
+    encode(&msg)
+}
+
+/// Encode a "join" message, containing a single member.
+pub(crate) fn join(info: &MemberInfo) -> FuturePaylod {
+    let address = match info.target.ip() {
+        net::IpAddr::V4(ip4) => ip4.octets().to_vec(),
+        net::IpAddr::V6(ip6) => ip6.octets().to_vec(),
+    };
+    let join = protomitch_pb::JoinMsg {
+        id: info.id,
+        address,
+        port: info.target.port().into(),
+        nickname: info.nickname.clone(),
+        min_proto: info.min_proto,
+        max_proto: info.max_proto,
+        metadata: info.metadata.clone(),
+    };
+    let value = protomitch_pb::mitch_msg::Value::Join(join);
+    let msg = protomitch_pb::MitchMsg { value: Some(value) };
+    encode(&msg)
 }
 
 /// Encode a "sync" response, containing an array of swarm members.

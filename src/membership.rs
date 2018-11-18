@@ -100,9 +100,9 @@ pub(crate) fn probe(
     let fut_probe = future::ok(peer)
         .inspect(|p| trace!("pinging peer {}", p.id))
         .and_then(move |peer| group::tls_connect(tls_client.clone(), &peer.target, timeout))
-        .and_then(move |tls| {
-            protomitch::ping().and_then(|payload| tokio::io::write_all(tls, payload).from_err())
-        }).map(|_| ());
+        .and_then(|tls| protomitch::ping().map(|payload| (tls, payload)))
+        .and_then(|(tls, payload)| tokio::io::write_all(tls, payload).from_err())
+        .map(|_tls| ());
     Box::new(fut_probe)
 }
 

@@ -19,7 +19,7 @@ tokio = "0.1"
 tokio-tls = "0.2"
 
 [build-dependencies]
-prost-build = "^0.4.0"
+prost-build = "^0.6.1"
 
 [dev-dependencies]
 env_logger = "0.6"

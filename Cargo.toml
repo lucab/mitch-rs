@@ -7,7 +7,7 @@ authors = ["Luca Bruno <luca.bruno@coreos.com>"]
 byteorder = "^1.2.7"
 bytes = "^0.4.10"
 error-chain = { version = "^0.12.0", default-features = false }
-futures = "^0.1.25"
+futures = "^0.3.4"
 log = "^0.4.6"
 names = "^0.11.0"
 native-tls = "0.2"

@@ -5,7 +5,7 @@ authors = ["Luca Bruno <luca.bruno@coreos.com>"]
 
 [dependencies]
 byteorder = "^1.2.7"
-bytes = "^0.4.10"
+bytes = "^1.0.1"
 error-chain = { version = "^0.12.0", default-features = false }
 futures = "^0.1.25"
 log = "^0.4.6"
